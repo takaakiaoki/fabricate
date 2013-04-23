@@ -591,6 +591,14 @@ class StraceRunner(Runner):
                     is_output = True
             elif stat_match:
                 match = stat_match
+                # skip if name is directory
+                tname = match.group('name')
+                tpid = match.group('pid')
+                tcwd = processes[pid].cwd
+                if tcwd != '.':
+                    tname = os.path.join(tcwd, tname)
+                if os.path.isdir(tname):
+                    match = None
             elif creat_match:
                 match = creat_match
                 # a created file is an output file
@@ -742,7 +750,11 @@ class _Groups(object):
     class value(object):
         """ the value type in the map """
         def __init__(self, val=None):
-            self.count = 0  # count of items not yet completed
+            self.count = 0  # count of items not yet completed.
+                            # This also includes count_in_false number
+            self.count_in_false = 0  # count of commands which is assigned 
+                                     # to False group, but will be moved
+                                     # to this group.
             self.items = [] # items in this group
             if val is not None:
                 self.items.append(val)
@@ -774,6 +786,12 @@ class _Groups(object):
                 self.groups[id] = self.value(val)
             self.groups[id].count += 1
     
+    def ensure(self, id):
+        """if id does not exit, create it without any value"""
+        with self.lock:
+            if not id in self.groups:
+                self.groups[id] = self.value()
+
     def get_count(self, id):
         with self.lock:
             if id not in self.groups:
@@ -800,6 +818,28 @@ class _Groups(object):
         with self.lock:
             return self.groups.keys()
 
+    # modification to reserve blocked commands to corresponding groups
+    def inc_count_for_blocked(self, id):
+        with self.lock:
+            if not id in self.groups:
+                self.groups[id] = self.value()
+            self.groups[id].count += 1
+            self.groups[id].count_in_false += 1
+    
+    def add_for_blocked(self, id, val):
+        # modification of add(), in order to move command from False group
+        # to actual group
+        with self.lock:
+            # id must be registered before
+            self.groups[id].items.append(val)
+            # count does not change (already considered 
+            # in inc_count_for_blocked), but decrease count_in_false.
+            c = self.groups[id].count_in_false - 1
+            if c < 0:
+                raise ValueError
+            self.groups[id].count_in_false = c
+
+    
 # pool of processes to run parallel jobs, must not be part of any object that
 # is pickled for transfer to these processes, ie it must be global
 _pool = None
@@ -844,15 +884,17 @@ def _results_handler( builder, delay=0.01):
                 if False in a.afters:
                     still_to_do -= 1 # don't count yourself of course
                 if still_to_do == 0:
-                    if isinstance(a.do, tuple):
+                    if isinstance(a.do, _todo):
                         if no_error:
                             async = _pool.apply_async(_call_strace, a.do.arglist,
                                         a.do.kwargs)
-                            _groups.add(a.do.group, _running(async, a.do.command))
-                    else:
+                            _groups.add_for_blocked(a.do.group, _running(async, a.do.command))
+                    elif isinstance(a.do, threading._Condition):
+                        # is this only for threading._Condition in after()?
                         a.do.acquire()
                         a.do.notify()
                         a.do.release()
+                    # else: #are there other cases?
                     _groups.remove_item(False, a)
                     _groups.dec_count(False)
             _stop_results.wait(delay)
@@ -992,11 +1034,16 @@ class Builder(object):
         # we want a command line string for the .deps file key and for display
         command = subprocess.list2cmdline(arglist)
         if not self.cmdline_outofdate(command):
+            if self.parallel_ok:
+                _groups.ensure(group)
             return command, None, None
 
         # if just checking up-to-date-ness, set flag and do nothing more
         self.outofdate_flag = True
         if self.checking:
+            # I am not sure this is needed, yet
+            if self.parallel_ok:
+                _groups.ensure(group)
             return command, None, None
 
         # use runner to run command and collect dependencies
@@ -1006,6 +1053,10 @@ class Builder(object):
             if after is not None:
                 if not hasattr(after, '__iter__'):
                     after = [after]
+                # This command is registered to False group firstly,
+                # but the actual group of this command should 
+                # count this blocked command as well as usual commands
+                _groups.inc_count_for_blocked(group)
                 _groups.add(False,
                             _after(after, _todo(group, command, arglist,
                                                 kwargs)))
@@ -1331,7 +1382,7 @@ _parsed_options = None
 # default usage message
 _usage = '[options] build script functions to run'
 
-def parse_options(usage=_usage, extra_options=None):
+def parse_options(usage=_usage, extra_options=None, cmdline=None):
     """ Parse command line options and return (parser, options, args). """
     parser = optparse.OptionParser(usage='Usage: %prog '+usage,
                                    version='%prog '+__version__)
@@ -1354,7 +1405,10 @@ def parse_options(usage=_usage, extra_options=None):
         # add any user-specified options passed in via main()
         for option in extra_options:
             parser.add_option(option)
-    options, args = parser.parse_args()
+    if cmdline is not None:
+        options, args = parser.parse_args(cmdline)
+    else:
+        options, args = parser.parse_args()
     _parsed_options = (parser, options, args)
     return _parsed_options
 
@@ -1377,7 +1431,7 @@ def fabricate_version(min=None, max=None):
     return __version__
 
 def main(globals_dict=None, build_dir=None, extra_options=None, builder=None,
-         default=None, jobs=1, **kwargs):
+         default=None, jobs=1, cmdline=None, **kwargs):
     """ Run the default function or the function(s) named in the command line
         arguments. Call this at the end of your build script. If one of the
         functions returns nonzero, main will exit with the last nonzero return
@@ -1396,7 +1450,7 @@ def main(globals_dict=None, build_dir=None, extra_options=None, builder=None,
     if _parsed_options is not None:
         parser, options, actions = _parsed_options
     else:
-        parser, options, actions = parse_options(extra_options=extra_options)
+        parser, options, actions = parse_options(extra_options=extra_options, cmdline=cmdline)
     kwargs['quiet'] = options.quiet
     kwargs['debug'] = options.debug
     if options.time:
