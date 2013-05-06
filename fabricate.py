@@ -460,10 +460,12 @@ class AtimesRunner(Runner):
         return deps, outputs
 
 class StraceProcess(object):
-    def __init__(self, cwd='.'):
+    def __init__(self, cwd='.', delayed=False):
         self.cwd = cwd
         self.deps = set()
         self.outputs = set()
+        self.delayed = delayed
+        self.delayed_lines = []
 
     def add_dep(self, dep):
         self.deps.add(dep)
@@ -471,6 +473,9 @@ class StraceProcess(object):
     def add_output(self, output):
         self.outputs.add(output)
 
+    def add_delayed_line(self, line):
+        self.delayed_lines.append(line)
+        
     def __str__(self):
         return '<StraceProcess cwd=%s deps=%s outputs=%s>' % \
                (self.cwd, self.deps, self.outputs)
@@ -540,86 +545,109 @@ class StraceRunner(Runner):
         shell('strace', '-fo', outname, '-e',
               'trace=' + self.strace_system_calls,
               args, **shell_keywords)
-        cwd = '.' 
-        status = 0
+        self.status = 0
         processes  = {}  # dictionary of processes (key = pid)
         unfinished = {}  # list of interrupted entries in strace log
         for line in outfile:
-            # look for split lines
-            unfinished_start_match = self._unfinished_start_re.match(line)
-            unfinished_end_match = self._unfinished_end_re.match(line)
-            if unfinished_start_match:
-                pid = unfinished_start_match.group('pid')
-                body = unfinished_start_match.group('body')
-                unfinished[pid] = pid + ' ' + body
-                continue
-            elif unfinished_end_match:
-                pid = unfinished_end_match.group('pid')
-                body = unfinished_end_match.group('body')
-                line = unfinished[pid] + body
-                del unfinished[pid]
+           self._match_line(line, processes, unfinished)
+ 
+        # collect outputs and dependencies from all processes
+        deps = set()
+        outputs = set()
+        for pid, process in processes.items():
+            deps = deps.union(process.deps)
+            outputs = outputs.union(process.outputs)
 
-            is_output = False
-            open_match = self._open_re.match(line)
-            stat_match = self._stat_re.match(line)
-            execve_match = self._execve_re.match(line)
-            creat_match = self._creat_re.match(line)
-            mkdir_match = self._mkdir_re.match(line)
-            symlink_match = self._symlink_re.match(line)
-            rename_match = self._rename_re.match(line)
-            clone_match = self._clone_re.match(line)  
+        return self.status, list(deps), list(outputs)
+        
+    def _match_line(self, line, processes, unfinished):
+        # look for split lines
+        unfinished_start_match = self._unfinished_start_re.match(line)
+        unfinished_end_match = self._unfinished_end_re.match(line)
+        if unfinished_start_match:
+            pid = unfinished_start_match.group('pid')
+            body = unfinished_start_match.group('body')
+            unfinished[pid] = pid + ' ' + body
+            return
+        elif unfinished_end_match:
+            pid = unfinished_end_match.group('pid')
+            body = unfinished_end_match.group('body')
+            line = unfinished[pid] + body
+            del unfinished[pid]
 
-            kill_match = self._kill_re.match(line)
-            if kill_match:
-                return None, None, None
+        is_output = False
+        open_match = self._open_re.match(line)
+        stat_match = self._stat_re.match(line)
+        execve_match = self._execve_re.match(line)
+        creat_match = self._creat_re.match(line)
+        mkdir_match = self._mkdir_re.match(line)
+        symlink_match = self._symlink_re.match(line)
+        rename_match = self._rename_re.match(line)
+        clone_match = self._clone_re.match(line)  
 
-            match = None
-            if execve_match:
-                pid = execve_match.group('pid')
-                if pid not in processes:
-                    processes[pid] = StraceProcess()
-                    match = execve_match
-            elif clone_match:
-                pid = clone_match.group('pid')
-                pid_clone = clone_match.group('pid_clone')
+        kill_match = self._kill_re.match(line)
+        if kill_match:
+            return None, None, None
+
+        match = None
+        if execve_match:
+            pid = execve_match.group('pid')
+            match = execve_match # Executables can be dependencies
+            if pid not in processes and len(processes) == 0:
+                # This is the first process so create dict entry
+                processes[pid] = StraceProcess()
+        elif clone_match:
+            pid = clone_match.group('pid')
+            pid_clone = clone_match.group('pid_clone')
+            if pid not in processes:
+                # Simple case where there are no delayed lines
                 processes[pid] = StraceProcess(processes[pid_clone].cwd)
-            elif open_match:
-                match = open_match
-                mode = match.group('mode')
-                if 'O_WRONLY' in mode or 'O_RDWR' in mode:
-                    # it's an output file if opened for writing
-                    is_output = True
-            elif stat_match:
-                match = stat_match
-                # skip if name is directory
-                tname = match.group('name')
-                tpid = match.group('pid')
-                tcwd = processes[pid].cwd
-                if tcwd != '.':
-                    tname = os.path.join(tcwd, tname)
-                if os.path.isdir(tname):
-                    match = None
-            elif creat_match:
-                match = creat_match
-                # a created file is an output file
+            else:
+                # Some line processing was delayed due to an interupted clone_match
+                processes[pid].cwd = processes[pid_clone].cwd # Set the correct cwd
+                processes[pid].delayed = False # Set that matching is no longer delayed
+                for delayed_line in processes[pid].delayed_lines:
+                    # Process all the delayed lines
+                    _match_line(line, processes, unfinished) 
+                processes[pid].delayed_lines = [] # Clear the lines
+        elif open_match:
+            match = open_match
+            mode = match.group('mode')
+            if 'O_WRONLY' in mode or 'O_RDWR' in mode:
+                # it's an output file if opened for writing
                 is_output = True
-            elif mkdir_match:
-                match = mkdir_match
-                if match.group('result') == '0':
-                    # a created directory is an output file
-                    is_output = True
-            elif symlink_match:
-            	match =  symlink_match                  
-                # the created symlink is an output file
+        elif stat_match:
+            match = stat_match
+            # skip if name is directory
+            tname = match.group('name')
+            tpid = match.group('pid')
+            tcwd = processes[pid].cwd
+            if tcwd != '.':
+                tname = os.path.join(tcwd, tname)
+            if os.path.isdir(tname):
+                match = None
+        elif creat_match:
+            match = creat_match
+            # a created file is an output file
+            is_output = True
+        elif mkdir_match:
+            match = mkdir_match
+            if match.group('result') == '0':
+                # a created directory is an output file
                 is_output = True
-            elif rename_match:
-                match = rename_match
-                # the destination of a rename is an output file
-                is_output = True
-                
-            if match:
-                name = match.group('name')
-                pid  = match.group('pid')
+        elif symlink_match:
+            match =  symlink_match                  
+            # the created symlink is an output file
+            is_output = True
+        elif rename_match:
+            match = rename_match
+            # the destination of a rename is an output file
+            is_output = True
+            
+        if match:
+            name = match.group('name')
+            pid  = match.group('pid')
+            if not self._matching_is_delayed(processes, pid, line):
                 cwd = processes[pid].cwd
                 if cwd != '.':
                     name = os.path.join(cwd, name)
@@ -641,24 +669,28 @@ class StraceRunner(Runner):
                     else:
                         processes[pid].add_dep(name)
 
-            match = self._chdir_re.match(line)
-            if match:
-                pid  = match.group('pid')
+        match = self._chdir_re.match(line)
+        if match:
+            pid  = match.group('pid')
+            if not self._matching_is_delayed(processes, pid, line):
                 processes[pid].cwd = os.path.join(processes[pid].cwd, match.group('cwd'))
 
-            match = self._exit_group_re.match(line)
-            if match:
-                status = int(match.group('status'))
+        match = self._exit_group_re.match(line)
+        if match:
+            self.status = int(match.group('status'))
 
-        # collect outputs and dependencies from all processes
-        deps = set()
-        outputs = set()
-        for pid, process in processes.items():
-            deps = deps.union(process.deps)
-            outputs = outputs.union(process.outputs)
-
-        return status, list(deps), list(outputs)
-
+    def _matching_is_delayed(self, processes, pid, line):
+        # Check if matching is delayed and cache a delayed line
+        if pid not in processes:
+             processes[pid] = StraceProcess(delayed=True)
+        
+        process = processes[pid]
+        if process.delayed:
+            process.add_delayed_line(line)
+            return True
+        else:
+            return False
+            
     def __call__(self, *args, **kwargs):
         """ Run command and return its dependencies and outputs, using strace
             to determine dependencies (by looking at what files are opened or
@@ -785,7 +817,7 @@ class _Groups(object):
             else:
                 self.groups[id] = self.value(val)
             self.groups[id].count += 1
-    
+
     def ensure(self, id):
         """if id does not exit, create it without any value"""
         with self.lock:
@@ -872,7 +904,7 @@ def _results_handler( builder, delay=0.01):
                             d, o = r.async.get()
                         except Exception, e:
                             r.results = e
-                            _groups.set_ok(False)
+                            _groups.set_ok(id, False)
                         else:
                             builder.done(r.command, d, o) # save deps
                             r.results = (r.command, d, o)
@@ -991,10 +1023,12 @@ class Builder(object):
         is_strace = isinstance(self.runner.actual_runner(), StraceRunner)
         self.parallel_ok = parallel_ok and is_strace and _pool is not None
         if self.parallel_ok:
+            global _results
             _results = threading.Thread(target=_results_handler,
                                         args=[self])
             _results.setDaemon(True)
             _results.start()
+            atexit.register(self._join_results_handler)
             StraceRunner.keep_temps = False # unsafe for parallel execution
             
     def echo(self, message):
@@ -1041,7 +1075,6 @@ class Builder(object):
         # if just checking up-to-date-ness, set flag and do nothing more
         self.outofdate_flag = True
         if self.checking:
-            # I am not sure this is needed, yet
             if self.parallel_ok:
                 _groups.ensure(group)
             return command, None, None
@@ -1297,6 +1330,11 @@ class Builder(object):
                 return True
         return False
 
+    def _join_results_handler(self):
+        """Stops then joins the results handler thread"""
+        _stop_results.set()
+        _results.join()
+
 # default Builder instance, used by helper run() and main() helper functions
 default_builder = None
 default_command = 'build'
@@ -1382,7 +1420,7 @@ _parsed_options = None
 # default usage message
 _usage = '[options] build script functions to run'
 
-def parse_options(usage=_usage, extra_options=None, cmdline=None):
+def parse_options(usage=_usage, extra_options=None, command_line=None):
     """ Parse command line options and return (parser, options, args). """
     parser = optparse.OptionParser(usage='Usage: %prog '+usage,
                                    version='%prog '+__version__)
@@ -1405,8 +1443,8 @@ def parse_options(usage=_usage, extra_options=None, cmdline=None):
         # add any user-specified options passed in via main()
         for option in extra_options:
             parser.add_option(option)
-    if cmdline is not None:
-        options, args = parser.parse_args(cmdline)
+    if command_line is not None:
+        options, args = parser.parse_args(command_line)
     else:
         options, args = parser.parse_args()
     _parsed_options = (parser, options, args)
@@ -1431,18 +1469,21 @@ def fabricate_version(min=None, max=None):
     return __version__
 
 def main(globals_dict=None, build_dir=None, extra_options=None, builder=None,
-         default=None, jobs=1, cmdline=None, **kwargs):
+         default=None, jobs=1, command_line=None, **kwargs):
     """ Run the default function or the function(s) named in the command line
         arguments. Call this at the end of your build script. If one of the
         functions returns nonzero, main will exit with the last nonzero return
         value as its status code.
 
+        "builder" is the class of builder to create, default (None) is the 
+        normal builder
+        "command_line" is an optional list of command line arguments that can
+        be used to prevent the default parsing of sys.argv. Used to intercept
+        and modify the command line passed to the build script.
+        "default" is the default user script function to call, None = 'build'
         "extra_options" is an optional list of options created with
         optparse.make_option(). The pseudo-global variable main.options
         is set to the parsed options list.
-        "builder" is the class of builder to create, default (None) is the 
-        normal builder
-        "default" is the default user script function to call, None = 'build'
         "kwargs" is any other keyword arguments to pass to the builder """
     global default_builder, default_command, _pool
 
@@ -1450,7 +1491,7 @@ def main(globals_dict=None, build_dir=None, extra_options=None, builder=None,
     if _parsed_options is not None:
         parser, options, actions = _parsed_options
     else:
-        parser, options, actions = parse_options(extra_options=extra_options, cmdline=cmdline)
+        parser, options, actions = parse_options(extra_options=extra_options, command_line=command_line)
     kwargs['quiet'] = options.quiet
     kwargs['debug'] = options.debug
     if options.time:
