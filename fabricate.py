@@ -23,7 +23,7 @@ To get help on fabricate functions:
 from __future__ import with_statement
 
 # fabricate version number
-__version__ = '1.25'
+__version__ = '1.26'
 
 # if version of .deps file has changed, we know to not use it
 deps_version = 2
@@ -542,9 +542,20 @@ class StraceRunner(Runner):
             Return (status code, list of dependencies, list of outputs). """
         shell_keywords = dict(silent=False)
         shell_keywords.update(kwargs)
-        shell('strace', '-fo', outname, '-e',
-              'trace=' + self.strace_system_calls,
-              args, **shell_keywords)
+        try:
+            shell('strace', '-fo', outname, '-e',
+                  'trace=' + self.strace_system_calls,
+                  args, **shell_keywords)
+        except ExecutionError, e:
+            # if strace failed to run, re-throw the exception
+            # we can tell this happend if the file is empty
+            outfile.seek(0, os.SEEK_END)
+            if outfile.tell() is 0:
+                raise e
+            else:
+                # reset the file postion for reading
+                outfile.seek(0)
+			
         self.status = 0
         processes  = {}  # dictionary of processes (key = pid)
         unfinished = {}  # list of interrupted entries in strace log
@@ -608,7 +619,7 @@ class StraceRunner(Runner):
                 processes[pid].delayed = False # Set that matching is no longer delayed
                 for delayed_line in processes[pid].delayed_lines:
                     # Process all the delayed lines
-                    _match_line(line, processes, unfinished) 
+                    self._match_line(delayed_line, processes, unfinished) 
                 processes[pid].delayed_lines = [] # Clear the lines
         elif open_match:
             match = open_match
@@ -775,6 +786,7 @@ class _after(object):
                 arglist, kwargs) or a threading.Condition to be released """
         self.afters = afters
         self.do = do
+        self.done = False
         
 class _Groups(object):
     """ Thread safe mapping object whose values are lists of _running
@@ -905,6 +917,8 @@ def _results_handler( builder, delay=0.01):
                         except Exception, e:
                             r.results = e
                             _groups.set_ok(id, False)
+                            message, data, status = e
+                            printerr("fabricate: " + message)
                         else:
                             builder.done(r.command, d, o) # save deps
                             r.results = (r.command, d, o)
@@ -921,14 +935,24 @@ def _results_handler( builder, delay=0.01):
                             async = _pool.apply_async(_call_strace, a.do.arglist,
                                         a.do.kwargs)
                             _groups.add_for_blocked(a.do.group, _running(async, a.do.command))
+                        else:
+                            # Mark the command as not done due to errors
+                            r = _running(None, a.do.command)
+                            _groups.add_for_blocked(a.do.group, r)
+                            r.results = False;
+                            _groups.set_ok(a.do.group, False)
+                            _groups.dec_count(a.do.group)
                     elif isinstance(a.do, threading._Condition):
                         # is this only for threading._Condition in after()?
                         a.do.acquire()
+                        # only mark as done if there is no error
+                        a.done = no_error 
                         a.do.notify()
                         a.do.release()
                     # else: #are there other cases?
                     _groups.remove_item(False, a)
                     _groups.dec_count(False)
+                    
             _stop_results.wait(delay)
     except Exception:
         etype, eval, etb = sys.exc_info()
@@ -1384,8 +1408,11 @@ def after(*args):
             args = _groups.ids()  # wait on all
         cond = threading.Condition()
         cond.acquire()
-        _groups.add(False, _after(args, cond))
+        a = _after(args, cond)
+        _groups.add(False, a)
         cond.wait()
+        if not a.done:
+            sys.exit(1)
         results = []
         ids = _groups.ids()
         for a in args:

@@ -1,8 +1,5 @@
 #!/usr/bin/env python
 
-# Test building using when intercepting the command line
-# Created for issue 33 testing
-
 if __name__ == '__main__':
     import sys
     sys.path.insert(0, '../../')
