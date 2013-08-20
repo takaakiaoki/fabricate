@@ -632,7 +632,7 @@ class StraceRunner(Runner):
             # skip if name is directory
             tname = match.group('name')
             tpid = match.group('pid')
-            tcwd = processes[pid].cwd
+            tcwd = processes[tpid].cwd
             if tcwd != '.':
                 tname = os.path.join(tcwd, tname)
             if os.path.isdir(tname):
