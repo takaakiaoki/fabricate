@@ -657,6 +657,7 @@ class StraceRunner(Runner):
         elif symlink_match:
             match = symlink_match
             # the created symlink is an output file
+            is_output = True
         elif rename_match:
             match = rename_match
             # the destination of a rename is an output file
