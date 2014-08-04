@@ -950,8 +950,8 @@ def _results_handler( builder, delay=0.01):
                             r.results = False;
                             _groups.set_ok(a.do.group, False)
                             _groups.dec_count(a.do.group)
-                    elif isinstance(a.do, threading._Condition):
-                        # is this only for threading._Condition in after()?
+                    elif isinstance(a.do, threading.Condition):
+                        # is this only for threading.Condition in after()?
                         a.do.acquire()
                         # only mark as done if there is no error
                         a.done = no_error 
