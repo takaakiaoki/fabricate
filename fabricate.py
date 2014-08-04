@@ -130,7 +130,7 @@ def args_to_list(args):
     for arg in args:
         if arg is None:
             continue
-        if hasattr(arg, '__setitem__'):
+        if isinstance(arg, list) or isinstance(arg, tuple):
             arglist.extend(args_to_list(arg))
         else:
             if not isinstance(arg, string_types):
@@ -523,7 +523,7 @@ class StraceRunner(Runner):
         try:
             # check strace is installed and if it supports each type of call
             for system_call in possible_system_calls:
-                proc = subprocess.Popen(['strace', '-e', 'trace=' + system_call], stderr=subprocess.PIPE)
+                proc = subprocess.Popen(['strace', '-e', 'trace=' + system_call], stderr=subprocess.PIPE, universal_newlines=True)
                 stdout, stderr = proc.communicate()
                 proc.wait()
                 if 'invalid system call' not in stderr:
