@@ -635,6 +635,12 @@ class StraceRunner(Runner):
                     # Process all the delayed lines
                     self._match_line(delayed_line, processes, unfinished) 
                 processes[pid].delayed_lines = [] # Clear the lines
+        elif open_match:
+            match = open_match
+            mode = match.group('mode')
+            if 'O_WRONLY' in mode or 'O_RDWR' in mode:
+                # it's an output file if opened for writing
+                is_output = True
         elif stat_match:
             match = stat_match
             # skip if name is directory
