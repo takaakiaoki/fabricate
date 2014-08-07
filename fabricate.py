@@ -557,6 +557,16 @@ class StraceRunner(Runner):
         shell_keywords = dict(silent=False)
         shell_keywords.update(kwargs)
         try:
+            # if shell_keywords[shell] == True, modify argument turn off 'shell' flag.
+            # note: concatination of cmdline args and selection of shell program
+            # should be considered more carefully.
+            if shell_keywords.get('shell', False):
+                if platform.system() == 'Windows':
+                    args = ['cmd.exe', '/c', subprocess.list2cmdline(args)]
+                else:
+                    args = ['/bin/sh', '-c', subprocess.list2cmdline(args)]
+                shell_keywords['shell'] = False
+
             shell('strace', '-fo', outname, '-e',
                   'trace=' + self.strace_system_calls,
                   args, **shell_keywords)
