@@ -948,8 +948,7 @@ def _results_handler(builder, delay=0.01):
                         except Exception as e:
                             r.results = e
                             _groups.set_ok(id, False)
-                            message, data, status = e
-                            printerr("fabricate: " + message)
+                            printerr("fabricate: " + str(e))
                         else:
                             builder.done(r.command, d, o) # save deps
                             r.results = (r.command, d, o)
