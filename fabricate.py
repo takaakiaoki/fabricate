@@ -246,6 +246,9 @@ class RunnerUnsupportedException(Exception):
     pass
 
 class Runner(object):
+    def __init__(self, builder):
+        self._builder = builder
+
     def __call__(self, *args, **kwargs):
         """ Run command and return (dependencies, outputs), where
             dependencies is a list of the filenames of files that the
@@ -263,8 +266,8 @@ class Runner(object):
 
 class AtimesRunner(Runner):
     def __init__(self, builder):
-        self._builder = builder
-        self.atimes = AtimesRunner.has_atimes(self._builder.dirs)
+        Runner.__init__(self, builder) # self._builder = builder
+        self.atimes = AtimesRunner.has_atimes(self.builder.dirs)
         if self.atimes == 0:
             raise RunnerUnsupportedException(
                 'atimes are not supported on this platform')
@@ -515,7 +518,7 @@ class StraceRunner(Runner):
         self.strace_system_calls = StraceRunner.get_strace_system_calls()
         if self.strace_system_calls is None:
             raise RunnerUnsupportedException('strace is not available')
-        self._builder = builder
+        Runner.__init__(self, builder) # self._builder = builder
         self.temp_count = 0
         self.build_dir = os.path.abspath(build_dir or os.getcwd())
 
@@ -773,7 +776,7 @@ class StraceRunner(Runner):
 
 class AlwaysRunner(Runner):
     def __init__(self, builder):
-        pass
+        Runner.__init__(self, builder)
 
     def __call__(self, *args, **kwargs):
         """ Runner that always runs given command, used as a backup in case
@@ -787,7 +790,7 @@ class SmartRunner(Runner):
     """ Smart command runner that uses StraceRunner if it can,
         otherwise AtimesRunner if available, otherwise AlwaysRunner. """
     def __init__(self, builder):
-        self._builder = builder
+        Runner.__init__(self, builder) # self._builder = builder
         try:
             self._runner = StraceRunner(self._builder)
         except RunnerUnsupportedException:
