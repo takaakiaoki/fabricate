@@ -500,7 +500,7 @@ def _call_strace(self, *args, **kwargs):
     """
     # works as compatible with Builder.echo_command
     echo = kwargs.pop('echo', None)
-    if echo is not None:
+    if echo is None:
         command = subprocess.list2cmdline(args)
     else:
         command = echo
