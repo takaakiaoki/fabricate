@@ -497,19 +497,13 @@ class StraceProcess(object):
         return '<StraceProcess cwd=%s deps=%s outputs=%s>' % \
                (self.cwd, self.deps, self.outputs)
 
-def _call_strace(self, *args, **kwargs):
-    """ Top level function call for Strace that can be run in parallel 
-    'self' is usually instance of Runner (or its subclasses)
-    """
+def _call_strace(runner, *args, **kwargs):
+    """ Top level function call for Strace that can be run in parallel"""
     # works as compatible with Builder.echo_command
     echo = kwargs.pop('echo', None)
-    if echo is None:
-        command = subprocess.list2cmdline(args)
-    else:
-        command = echo
-    print(command)
+    runner._builder.echo_command(subprocess.list2cmdline(args), echo)
 
-    return self(*args, **kwargs)
+    return runner(*args, **kwargs)
 
 class StraceRunner(Runner):
     keep_temps = False
