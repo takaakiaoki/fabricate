@@ -495,7 +495,17 @@ class StraceProcess(object):
                (self.cwd, self.deps, self.outputs)
 
 def _call_strace(self, *args, **kwargs):
-    """ Top level function call for Strace that can be run in parallel """
+    """ Top level function call for Strace that can be run in parallel 
+    'self' is usually instance of Runner (or its subclasses)
+    """
+    # works as compatible with Builder.echo_command
+    echo = kwargs.pop('echo', None)
+    if echo is not None:
+        command = subprocess.list2cmdline(args)
+    else:
+        command = echo
+    print(command)
+
     return self(*args, **kwargs)
 
 class StraceRunner(Runner):
@@ -925,7 +935,7 @@ class _todo(object):
         self.arglist = arglist  # command arguments
         self.kwargs = kwargs    # keywork args for the runner
         
-def _results_handler( builder, delay=0.01):
+def _results_handler(builder, delay=0.01):
     """ Body of thread that stores results in .deps and handles 'after'
         conditions
        "builder" the builder used """
@@ -1128,8 +1138,9 @@ class Builder(object):
             return command, None, None
 
         # use runner to run command and collect dependencies
-        self.echo_command(command, echo=echo)
         if self.parallel_ok:
+            # set echo option again to pass _call_strace
+            kwargs['echo'] = echo
             arglist.insert(0, self.runner)
             if after is not None:
                 if not hasattr(after, '__setitem__'):
@@ -1146,6 +1157,8 @@ class Builder(object):
                 _groups.add(group, _running(async, command))
             return None
         else:
+            # non-parallel mode
+            self.echo_command(command, echo=echo)
             deps, outputs = self.runner(*arglist, **kwargs)
             return self.done(command, deps, outputs)
         
