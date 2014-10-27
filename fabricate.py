@@ -267,7 +267,7 @@ class Runner(object):
 class AtimesRunner(Runner):
     def __init__(self, builder):
         Runner.__init__(self, builder) # self._builder = builder
-        self.atimes = AtimesRunner.has_atimes(self.builder.dirs)
+        self.atimes = AtimesRunner.has_atimes(self._builder.dirs)
         if self.atimes == 0:
             raise RunnerUnsupportedException(
                 'atimes are not supported on this platform')
